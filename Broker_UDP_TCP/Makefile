@@ -9,11 +9,11 @@ IP_SERVER = 192.168.0.2
 
 all: server subscriber
 
-common.o: common.cpp
+utils.o: utils.cpp
 
-server: server.cpp common.o
+server: server.cpp utils.o
 
-subscriber: subscriber.cpp common.o
+subscriber: subscriber.cpp utils.o
 
 .PHONY: clean 	
 

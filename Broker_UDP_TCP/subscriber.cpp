@@ -11,12 +11,54 @@
 
 #include <cstring>
 #include <cmath>
-#include "common.hpp"
-#include "helpers.hpp"
-	
+#include <array>
+#include <functional>
+
+#include "utils.hpp"
+
+static inline
+void print_int(const char *content) {
+	int64_t res_int;
+	memcpy(&res_int, content, sizeof(res_int));
+	printf("%s - %ld\n", "INT", res_int);
+}
+
+static inline
+void print_short(const char *content) {
+	float res_short;
+	memcpy(&res_short, content, sizeof(res_short));
+	printf("%s - %.2f\n", "SHORT_REAL", res_short);
+}
+
+static inline
+void print_float(const char *content) {
+	float res_float;
+	uint8_t neg_pow;
+	memcpy(&res_float, content, sizeof(res_float));
+	memcpy(&neg_pow, content + sizeof(res_float), sizeof(neg_pow));
+	char format[32] = {0};
+	res_float /= pow(10, neg_pow);
+	snprintf(format, sizeof(format), "FLOAT - %%.%df\n", neg_pow);
+	printf(format, res_float);
+}
+
+static inline
+void print_string(const char *content) {
+	printf("%s - %s\n", "STRING", content);
+}
+
 void run_client(int sockfd) {
-	char buf[70] = {0};
+	/* ("UNSUBSCRIBE " = 12) + (TOPIC_SIZE = 50) + '\0 */
+	char buf[SUBSCRIBE_SIZE] = {0};
 	
+	/* could be a switch case */
+	std::array<std::function<void(const char *)>, 4> print_data = {
+		print_int,
+		print_short,
+		print_float,
+		print_string
+	};
+
 	struct pollfd poll_fd[2];
 	poll_fd[0] = (struct pollfd) {sockfd, POLLIN, 0};
 	poll_fd[1] = (struct pollfd) {STDIN_FILENO, POLLIN, 0};
@@ -26,9 +68,9 @@ void run_client(int sockfd) {
 		rc = poll(poll_fd, 2, -1);
 		DIE(rc < 0, "poll() failed");
 
+		/* STDIN user input */
 		if (poll_fd[1].revents & POLLIN) {
 			fgets(buf, sizeof(buf), stdin);
-			/* Comanda a clientului de la tastatura */
 
 			char *tok = strtok(buf, "\n ");
 			if (!tok)
@@ -40,27 +82,32 @@ void run_client(int sockfd) {
 			} else if (!strcmp(tok, "unsubscribe")) {
 				subscribe = false;
 			} else if (!strcmp(tok, "exit")) {
-				/* trebuie sa inchid acest client */
+				/* closing this client */
 				for (int i = 0; i < 2; ++i)
 					if (close(poll_fd[i].fd) < 0)
 						DIE(1, "close() failed\n");
 				return;
 			} else {
+				/* 1 word only - you have to subscribe to a topic */
 				continue;
 			}
 
 
 			tok = strtok(nullptr, "\n ");
 			if (!tok) continue;
-			if (strtok(nullptr, "\n ")) continue; // should be null
 
-			if (subscribe) {
+			/* should be null -> only two words allowed */
+			if (strtok(nullptr, "\n ")) continue;
+
+			if (subscribe)
 				printf("Subscribed to topic %s\n", tok);
-			} else {
+			else
 				printf("Unsubscribed from topic %s\n", tok);
-			}
+
 			/* topic is now in tok */
 			char sent_packet_message[TOPIC_SIZE + 2] = {0};
+
+			/* subscribe -> 0 / 1*/
 			sent_packet_message[0] = subscribe;
 			int tok_len = strlen(tok);
 			memcpy(sent_packet_message + 1, tok, tok_len);
@@ -73,12 +120,12 @@ void run_client(int sockfd) {
 			int topic_len;
 			char data_type;
 			int content_len;
-			char topic[TOPIC_SIZE + 1 + sizeof(data_type) + sizeof(content_len)] = {0};
+			char topic[TOPIC_SIZE + 1 + DATA_SIZE + sizeof(content_len)] = {0};
 			char content[CONTENT_SIZE + 1] = {0};
 			// recv_all(sockfd, &udp_client_ip, sizeof(udp_client_ip));
 			// recv_all(sockfd, &udp_client_port, sizeof(udp_client_port));
 			rc = recv_all(sockfd, &topic_len, sizeof(int));
-			if (rc <= 0)
+			if (rc == 0)
 				break; // server closed
 			recv_all(sockfd, topic, topic_len);
 			
@@ -86,42 +133,12 @@ void run_client(int sockfd) {
 			memcpy(&data_type, topic + len + 1, DATA_SIZE);
 			memcpy(&content_len, topic + len + 1 + DATA_SIZE, sizeof(int));
 			recv_all(sockfd, content, content_len);
-
 			// const char *ip_client_udp = inet_ntoa(udp_client_ip);
 			// const uint16_t port_udp = ntohs(udp_client_port);
-
 			// printf("%s:%hu - %s - ", ip_client_udp, port_udp, topic);
 			printf("%s - ", topic);
 
-			switch (data_type)
-			{
-			case 0: {
-				int64_t res_int;
-				memcpy(&res_int, content, sizeof(res_int));
-				printf("%s - %ld\n", "INT", res_int);
-				break;
-			} case 1: {
-				float res_short;
-				memcpy(&res_short, content, sizeof(res_short));
-				printf("%s - %.2f\n", "SHORT_REAL", res_short);
-				break;
-			} case 2: {
-				float res_float;
-				uint8_t neg_pow;
-				memcpy(&res_float, content, sizeof(res_float));
-				memcpy(&neg_pow, content + sizeof(res_float), sizeof(neg_pow));
-				char format[32] = {0};
-				res_float /= pow(10, neg_pow);
-				snprintf(format, sizeof(format), "FLOAT - %%.%df\n", neg_pow);
-				printf(format, res_float);
-				break;
-			} case 3: {
-				printf("%s - %s\n", "STRING", content);
-				break;
-			}
-			default:
-				break;
-			}
+			print_data[data_type](content);
 		}
 	}	
 }
@@ -132,8 +149,7 @@ int main(int argc, char *argv[]) {
 		return -1;
 	}
 
-	int id_client_len = strlen(argv[1]);
-	if (id_client_len > 10) {
+	if (strlen(argv[1]) > 10) {
 		fprintf(stderr, "Client's ID must have a length of maximum 10 characters\n");
 		return -1;
 	}
@@ -172,9 +188,16 @@ int main(int argc, char *argv[]) {
 	/* Send ID to the server */
 	send_all(sockfd, argv[1], ID_SIZE);
 
+	/**
+	 * @paragraph:
+	 * @param ok is like an ACK sent by the server
+	 * that tells the client its ID is unique and can run on the server.
+	 * If ok == 1 => run_client(), else close socket and exit
+	*/
 	int ok;
 	recv_all(sockfd, &ok, sizeof(int));
 	if (ok) {
+		/* the socket is closed in run_client() */
 		run_client(sockfd);
 		return 0;
 	}

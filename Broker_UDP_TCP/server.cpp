@@ -15,9 +15,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include "common.hpp"
-#include "subscriber.hpp"
-#include "helpers.hpp"
+#include "utils.hpp"
 
 using std::cout;
 using std::unordered_map;
@@ -106,7 +104,7 @@ vector<string> process_topic(const char* str) {
 	return res;
 }
 
-static int
+int
 get_content_length(char data_type, const char *content) {
 	switch (data_type) {
 		case 0: return sizeof(int64_t);
