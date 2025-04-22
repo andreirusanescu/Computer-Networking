@@ -104,3 +104,6 @@ This was an interesting assignment where I could practice my C++ skills
 and better understand the POLL API along with UDP and TCP protocols, while
 also brushing up on low level string management and memory accesses. Now
 I am confident I can implement a TCP/UDP server or use the `socket.h` API.
+I used constant keyword and reference access as much as possible to reduce
+the risk of unwanted accesses and the risk of instantiating a structure twice.
+The code is documented in the header files `*.hpp`.
