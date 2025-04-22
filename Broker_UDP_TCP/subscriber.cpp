@@ -47,11 +47,12 @@ void print_string(const char *content) {
 	printf("%s - %s\n", "STRING", content);
 }
 
-void run_client(int sockfd) {
-	/* ("UNSUBSCRIBE " = 12) + (TOPIC_SIZE = 50) + '\0 */
+static void run_client(int sockfd) {
 	char buf[SUBSCRIBE_SIZE] = {0};
 	
-	/* could be a switch case */
+	/** Could be a switch case
+	 *  Prints the content based on the data type
+	 */
 	std::array<std::function<void(const char *)>, 4> print_data = {
 		print_int,
 		print_short,
@@ -73,8 +74,7 @@ void run_client(int sockfd) {
 			fgets(buf, sizeof(buf), stdin);
 
 			char *tok = strtok(buf, "\n ");
-			if (!tok)
-				continue;
+			if (!tok) continue;
 
 			bool subscribe;
 			if (!strcmp(tok, "subscribe")) {
@@ -83,9 +83,10 @@ void run_client(int sockfd) {
 				subscribe = false;
 			} else if (!strcmp(tok, "exit")) {
 				/* closing this client */
-				for (int i = 0; i < 2; ++i)
-					if (close(poll_fd[i].fd) < 0)
-						DIE(1, "close() failed\n");
+				for (int i = 0; i < 2; ++i) {
+					rc = close(poll_fd[i].fd);
+					DIE(rc < 0, "close() failed\n");
+				}
 				return;
 			} else {
 				/* 1 word only - you have to subscribe to a topic */
@@ -111,9 +112,7 @@ void run_client(int sockfd) {
 			sent_packet_message[0] = subscribe;
 			int tok_len = strlen(tok);
 			memcpy(sent_packet_message + 1, tok, tok_len);
-			tok_len += 2;
-			send_all(sockfd, &tok_len, sizeof(int));
-			send_all(sockfd, sent_packet_message, tok_len);
+			send_all(sockfd, sent_packet_message, sizeof(sent_packet_message));
 		} else if (poll_fd[0].revents & POLLIN) {
 			// in_addr udp_client_ip;
 			// uint16_t udp_client_port;
@@ -169,9 +168,8 @@ int main(int argc, char *argv[]) {
 		perror("setsockopt(SO_REUSEADDR) failed\n");
 
 	/* Disable Nagle's algorithm */
-	if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(int)) < 0) {
+	if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(int)) < 0)
 		perror("Disabling Nagle's algorithm failed\n");
-	}
 
 	sockaddr_in serv_addr;
 	socklen_t socket_len = sizeof(sockaddr_in);
@@ -189,14 +187,14 @@ int main(int argc, char *argv[]) {
 	send_all(sockfd, argv[1], ID_SIZE);
 
 	/**
-	 * @paragraph:
-	 * @param ok is like an ACK sent by the server
+	 * @paragraph
+	 * @param ack is like an ACK sent by the server
 	 * that tells the client its ID is unique and can run on the server.
-	 * If ok == 1 => run_client(), else close socket and exit
+	 * If ack == 1 => run_client(), else close socket and exit
 	*/
-	int ok;
-	recv_all(sockfd, &ok, sizeof(int));
-	if (ok) {
+	int ack;
+	recv_all(sockfd, &ack, sizeof(int));
+	if (ack) {
 		/* the socket is closed in run_client() */
 		run_client(sockfd);
 		return 0;

@@ -16,8 +16,8 @@
 #include <unordered_set>
 
 #include "utils.hpp"
+#include "server.hpp"
 
-using std::cout;
 using std::unordered_map;
 using std::vector, std::string;
 
@@ -28,8 +28,8 @@ void log_tcp_client(vector<pollfd>& pollfds, const int tcp_fd,
 	sockaddr_in tcp_cli_addr;
 	socklen_t len = sizeof(sockaddr_in);
 	const int newsockfd = accept(tcp_fd, (sockaddr *) &tcp_cli_addr, &len);
-	DIE(newsockfd < 0, "socket() failed\n");
-	
+	DIE(newsockfd < 0, "accept() failed\n");
+
 	const int enable = 1;
 	if (setsockopt(newsockfd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0)
 		perror("setsockopt(SO_REUSEADDR) failed for tcp client\n");
@@ -39,22 +39,33 @@ void log_tcp_client(vector<pollfd>& pollfds, const int tcp_fd,
 
 	const string id_str(id);
 
-	/* Added a new subscriber */
+	/* Added a new subscriber if the ID is unique */
 	if (subscribers.find(id_str) == subscribers.end()) {
-		subscribers.emplace(id_str, newsockfd);
-		int ok = 1;
-		send_all(newsockfd, &ok, sizeof(int));
+		/* Send ack to the client, meaning this ID is not used */
+		int ack = 1;
+		send_all(newsockfd, &ack, sizeof(int));
 		printf("New client %s connected from %s:%hu.\n", id,
 			inet_ntoa(tcp_cli_addr.sin_addr), ntohs(tcp_cli_addr.sin_port));
+
+		/** Map the id of the TCP subscriber to its fd.
+		 *  Use `emplace` to not make any internal copies.
+		 */
+		subscribers.emplace(id_str, newsockfd);
 		pollfds.push_back({newsockfd, POLLIN, 0});
 		fd_to_id.emplace(newsockfd, id_str);
 		return;
 	}
 
+	/**
+	 * Use .at method in order not to create any internal
+	 * structures of subscriber and get the reference not
+	 * to make any copies.
+	 */
 	subscriber_t& subscriber = subscribers.at(id_str);
 	if (!subscriber.connected) {
-		int ok = 1;
-		send_all(newsockfd, &ok, sizeof(int));
+		/* If subscriber has disconnected and wants to connect back */
+		int ack = 1;
+		send_all(newsockfd, &ack, sizeof(int));
 		subscriber.connected = true;
 		printf("New client %s connected from %s:%hu.\n", id,
 			inet_ntoa(tcp_cli_addr.sin_addr), ntohs(tcp_cli_addr.sin_port));
@@ -62,8 +73,12 @@ void log_tcp_client(vector<pollfd>& pollfds, const int tcp_fd,
 		return;
 	}
 
-	int ok = 0;
-	send_all(newsockfd, &ok, sizeof(int));
+	/**
+	 * Client already connected - send ack with 0 -> telling
+	 * the subscriber to close the connection
+	 */
+	int ack = 0;
+	send_all(newsockfd, &ack, sizeof(int));
 	printf("Client %s already connected.\n", id);
 	rc = close(newsockfd);
 	DIE(rc < 0, "close() failed\n");
@@ -77,9 +92,11 @@ bool match(const vector<string>& s, const vector<string>& p) {
 	for (int i = 1; i <= m; ++i) {
 		for (int j = 1; j <= n; ++j) {
 			if (p[j - 1] == "*") {
-				/* iau caracterele din trecut sau matchuiesc cu asta curent */
+				/** Match * with multiple characters that were processed
+				 *  or match it with a single one */
 				dp[i][j] = dp[i - 1][j] || dp[i - 1][j - 1];
 			} else if (p[j - 1] == "+" || s[i - 1] == p[j - 1]) {
+				/* Match the current character + with the current*/
 				dp[i][j] = dp[i - 1][j - 1];
 			}
 		}
@@ -104,7 +121,11 @@ vector<string> process_topic(const char* str) {
 	return res;
 }
 
-int
+/**
+ * @brief Based on data_type returns the size of
+ * the content.
+ */
+static int
 get_content_length(char data_type, const char *content) {
 	switch (data_type) {
 		case 0: return sizeof(int64_t);
@@ -115,8 +136,9 @@ get_content_length(char data_type, const char *content) {
 	return 0;
 }
 
-void 
-receive_udp(const int udp_fd, unordered_map<string, subscriber_t>& subscribers) {
+void
+receive_udp(const int udp_fd,
+			const unordered_map<string, subscriber_t>& subscribers) {
 	char buf[UDP_MAXSIZE] = {0};
 	sockaddr_in sender;
 	memset(&sender, 0, sizeof(sender));
@@ -124,11 +146,13 @@ receive_udp(const int udp_fd, unordered_map<string, subscriber_t>& subscribers) 
 	recvfrom(udp_fd, buf, sizeof(buf), 0, (sockaddr *)&sender, &sender_len);
 
 	char topic[TOPIC_SIZE + 1 + DATA_SIZE + sizeof(int)] = {0};
-	memcpy(topic, buf, TOPIC_SIZE);
 	char data_type;
-	memcpy(&data_type, buf + TOPIC_SIZE, 1);
 	char content[CONTENT_SIZE + 1] = {0};
 
+	memcpy(topic, buf, TOPIC_SIZE);
+	memcpy(&data_type, buf + TOPIC_SIZE, 1);
+
+	/* Load the content based on data type */
 	switch (data_type) {
 	case 0: {
 		uint8_t sign_int;
@@ -137,14 +161,12 @@ receive_udp(const int udp_fd, unordered_map<string, subscriber_t>& subscribers) 
 		memcpy(&integer, buf + TOPIC_SIZE + 1 + sizeof(sign_int), sizeof(integer));
 		integer = ntohl(integer);
 		int64_t res_int = integer;
-		if (sign_int)
-			res_int *= -1;
+		if (sign_int) res_int *= -1;
 		memcpy(content, &res_int, sizeof(res_int));
 		break;
 	} case 1: {
 		uint16_t short_real;
 		memcpy(&short_real, buf + TOPIC_SIZE + 1, sizeof(short_real));
-
 		short_real = ntohs(short_real);
 
 		float res_short = static_cast<float>(short_real) / 100;
@@ -160,8 +182,7 @@ receive_udp(const int udp_fd, unordered_map<string, subscriber_t>& subscribers) 
 		modulo = ntohl(modulo);
 
 		float res_float = static_cast<float>(modulo);
-		if (sign_float)
-			res_float *= -1;
+		if (sign_float) res_float *= -1;
 
 		memcpy(content, &res_float, sizeof(res_float));
 		memcpy(content + sizeof(res_float), &neg_pow, sizeof(neg_pow));
@@ -170,15 +191,18 @@ receive_udp(const int udp_fd, unordered_map<string, subscriber_t>& subscribers) 
 		memcpy(content, buf + TOPIC_SIZE + 1, CONTENT_SIZE);
 		break;
 	} default:
-		break;
+		/* Unrecognized data format */
+		return;
 	}
 
-	int content_len = get_content_length(data_type, content);
-	int topic_len = strlen(topic);
+	/* Process the data beforehand - data to be sent to the subscribers */
+	const int content_len = get_content_length(data_type, content);
+	const int topic_len = strlen(topic);
 	int topic_size = topic_len + 1 + sizeof(data_type) + sizeof(int);
 	memcpy(topic + topic_len + 1, &data_type, DATA_SIZE);
 	memcpy(topic + topic_len + 1 + DATA_SIZE, &content_len, sizeof(int));
 
+	/* Processed topic that received an update */
 	vector<string> topic_vec = process_topic(topic);
 	for (const auto& [id, sub] : subscribers) {
 		if (!sub.connected) continue;
@@ -189,6 +213,7 @@ receive_udp(const int udp_fd, unordered_map<string, subscriber_t>& subscribers) 
 				send_all(sub.fd, &topic_size, sizeof(int));
 				send_all(sub.fd, topic, topic_size);
 				send_all(sub.fd, content, content_len);
+				break; // a notification is sent only for one topic
 			}
 		}
 	}
@@ -197,7 +222,7 @@ receive_udp(const int udp_fd, unordered_map<string, subscriber_t>& subscribers) 
 void run_server(const int tcp_fd, const int udp_fd) {
 	int rc;
 	unordered_map<string, subscriber_t> id_subscribers; /* map of ID -> subscriber */
-	unordered_map<int, string> fd_to_id; /* map of fd to ID */
+	unordered_map<int, string> fd_to_id; /* map of subscriber_fd -> ID */
 	vector<pollfd> pollfds(3);
 	pollfds[0] = (struct pollfd) {tcp_fd, POLLIN, 0};
 	pollfds[1] = (struct pollfd) {udp_fd, POLLIN, 0};
@@ -210,52 +235,55 @@ void run_server(const int tcp_fd, const int udp_fd) {
 		rc = poll(pollfds.data(), pollfds.size(), 0);
 		DIE(rc < 0, "poll() failed\n");
 
+		/* New subscriber */
 		if (pollfds[0].revents & POLLIN) {
 			log_tcp_client(pollfds, tcp_fd, id_subscribers, fd_to_id);
+			continue;
+		/* UDP Client updates on topics */
 		} else if (pollfds[1].revents & POLLIN) {
-			/* UDP Client updates on topics */
 			receive_udp(udp_fd, id_subscribers);
+			continue;
+		/* STDIN message - could be exit */
 		} else if (pollfds[2].revents & POLLIN) {
-			/* mesaj tastatura - poate fi exit */
-			char buf[5]; // buffer for exit
+			char buf[5];
 			fgets(buf, sizeof(buf), stdin);
 			if (!strcmp(buf, "exit")) {
-				/* Deconecteaza toti clientii */
-				for (auto& pollfd : pollfds)
-					close(pollfd.fd);
+				/* Close the server */
+				for (auto& pollfd : pollfds) {
+					rc = close(pollfd.fd);
+					DIE(rc < 0, "close() failed\n");
+				}
 				return;
 			}
-		} else {
-			char received_message[TOPIC_SIZE + 2] = {0};
-			for (unsigned i = 3; i < pollfds.size(); ++i) {
-				/* Unul din clientii TCP - cerere de subscribe sau unsubscribe */
-				if (pollfds[i].revents & POLLIN) {
-					int recv_size;
-					rc = recv_all(pollfds[i].fd, &recv_size, sizeof(int));
-					if (rc == 0) {
-						string& id = fd_to_id[pollfds[i].fd];
-						subscriber_t& sub = id_subscribers.at(id);
-						// sub.topics.clear(); // se sterg topicele urmarite
-						sub.connected = false;
+			continue;
+		}
 
-						pollfds.erase(pollfds.begin() + i);
-						rc = close(pollfds[i].fd);
-						DIE(rc < 0, "close() failed\n");
-						printf("Client %s disconnected.\n", id.c_str());
-						--i;
-						continue;
-					}
-					recv_all(pollfds[i].fd, received_message, recv_size);
-					const string& id = fd_to_id[pollfds[i].fd];
+		char rcvd_msg[TOPIC_SIZE + 2] = {0};
+		for (unsigned i = 3; i < pollfds.size(); ++i) {
+			/* TCP subscribers - subscribe or unsubscribe request */
+			if (pollfds[i].revents & POLLIN) {
+				rc = recv_all(pollfds[i].fd, rcvd_msg, sizeof(rcvd_msg));
+				/* Client disconnected */
+				if (rc == 0) {
+					const string& id = fd_to_id.at(pollfds[i].fd);
 					subscriber_t& sub = id_subscribers.at(id);
-					/* Subscribe */
-					if (received_message[0] == 1) {
-						sub.topics.insert(received_message + 1);
-					/* Unsubscribe */
-					} else {
-						sub.topics.erase(received_message + 1);
-					}
+					sub.connected = false;
+					rc = close(pollfds[i].fd);
+					DIE(rc < 0, "close() failed\n");
+					printf("Client %s disconnected.\n", id.c_str());
+					pollfds.erase(pollfds.begin() + i);
+					--i;
+					continue;
 				}
+
+				const string& id = fd_to_id.at(pollfds[i].fd);
+				subscriber_t& sub = id_subscribers.at(id);
+				/* Subscribe */
+				if (rcvd_msg[0] == 1)
+					sub.topics.insert(rcvd_msg + 1);
+				/* Unsubscribe */
+				else
+					sub.topics.erase(rcvd_msg + 1);
 			}
 		}
 	}
@@ -295,9 +323,8 @@ int main(int argc, char *argv[]) {
 	if (setsockopt(tcp_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0)
 		perror("setsockopt(SO_REUSEADDR) failed\n");
 
-	if (setsockopt(tcp_fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(int)) < 0) {
+	if (setsockopt(tcp_fd, IPPROTO_TCP, TCP_NODELAY, &enable, sizeof(int)) < 0)
 		perror("Disabling Nagle's algorithm failed\n");
-	}
 
 	rc = bind(tcp_fd, (sockaddr *)&server_address, sizeof(sockaddr_in));
 	DIE(rc < 0, "bind() failed\n");
