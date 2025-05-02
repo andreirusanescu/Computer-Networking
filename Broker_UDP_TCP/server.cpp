@@ -204,13 +204,19 @@ receive_udp(const int udp_fd,
 
 	/* Processed topic that received an update */
 	vector<string> topic_vec = process_topic(topic);
+	char ip_port_topicsize[sizeof(sender.sin_addr) + sizeof(sender.sin_port) + sizeof(topic_size)];
+	memcpy(ip_port_topicsize, &sender.sin_addr, sizeof(sender.sin_addr));
+	memcpy(ip_port_topicsize + sizeof(sender.sin_addr), &sender.sin_port, sizeof(sender.sin_port));
+	memcpy(ip_port_topicsize + sizeof(sender.sin_addr) + sizeof(sender.sin_port),
+		   &topic_size, sizeof(int));
 	for (const auto& [id, sub] : subscribers) {
 		if (!sub.connected) continue;
 		for (const auto& sub_topic : sub.topics) {
 			if (match(topic_vec, process_topic(sub_topic.c_str()))) {
 				// send_all(sub.fd, &sender.sin_addr, sizeof(sender.sin_addr));
 				// send_all(sub.fd, &sender.sin_port, sizeof(sender.sin_port));
-				send_all(sub.fd, &topic_size, sizeof(int));
+				// send_all(sub.fd, &topic_size, sizeof(int));
+				send_all(sub.fd, ip_port_topicsize, sizeof(ip_port_topicsize));
 				send_all(sub.fd, topic, topic_size);
 				send_all(sub.fd, content, content_len);
 				break; // a notification is sent only for one topic

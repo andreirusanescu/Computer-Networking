@@ -49,21 +49,15 @@ void print_string(const char *content) {
 
 static void run_client(int sockfd) {
 	char buf[SUBSCRIBE_SIZE] = {0};
-	
 	/** Could be a switch case
-	 *  Prints the content based on the data type
-	 */
+	 *  Prints the content based on the data type */
 	std::array<std::function<void(const char *)>, 4> print_data = {
-		print_int,
-		print_short,
-		print_float,
-		print_string
+		print_int, print_short, print_float, print_string
 	};
 
 	struct pollfd poll_fd[2];
 	poll_fd[0] = (struct pollfd) {sockfd, POLLIN, 0};
 	poll_fd[1] = (struct pollfd) {STDIN_FILENO, POLLIN, 0};
-
 	int rc;
 	while (1) {
 		rc = poll(poll_fd, 2, -1);
@@ -89,11 +83,8 @@ static void run_client(int sockfd) {
 				}
 				return;
 			} else {
-				/* 1 word only - you have to subscribe to a topic */
-				continue;
+				continue; /* you have to subscribe to a topic */
 			}
-
-
 			tok = strtok(nullptr, "\n ");
 			if (!tok) continue;
 
@@ -107,36 +98,36 @@ static void run_client(int sockfd) {
 
 			/* topic is now in tok */
 			char sent_packet_message[TOPIC_SIZE + 2] = {0};
-
-			/* subscribe -> 0 / 1*/
-			sent_packet_message[0] = subscribe;
+			sent_packet_message[0] = subscribe; /* subscribe -> 0 / 1*/
 			int tok_len = strlen(tok);
 			memcpy(sent_packet_message + 1, tok, tok_len);
 			send_all(sockfd, sent_packet_message, sizeof(sent_packet_message));
 		} else if (poll_fd[0].revents & POLLIN) {
-			// in_addr udp_client_ip;
-			// uint16_t udp_client_port;
+			in_addr client_ip;
+			uint16_t client_port;
 			int topic_len;
 			char data_type;
 			int content_len;
+			char ip_port_topicsize[sizeof(client_ip) + sizeof(client_port) + sizeof(topic_len)];
 			char topic[TOPIC_SIZE + 1 + DATA_SIZE + sizeof(content_len)] = {0};
 			char content[CONTENT_SIZE + 1] = {0};
-			// recv_all(sockfd, &udp_client_ip, sizeof(udp_client_ip));
-			// recv_all(sockfd, &udp_client_port, sizeof(udp_client_port));
-			rc = recv_all(sockfd, &topic_len, sizeof(int));
+			rc = recv_all(sockfd, ip_port_topicsize, sizeof(ip_port_topicsize));
 			if (rc == 0)
 				break; // server closed
+
+			memcpy(&client_ip, ip_port_topicsize, sizeof(in_addr));
+			memcpy(&client_port, ip_port_topicsize + sizeof(in_addr), sizeof(uint16_t));
+			memcpy(&topic_len, ip_port_topicsize + sizeof(in_addr) + sizeof(uint16_t), sizeof(int));
 			recv_all(sockfd, topic, topic_len);
-			
+
 			int len = strlen(topic);
 			memcpy(&data_type, topic + len + 1, DATA_SIZE);
 			memcpy(&content_len, topic + len + 1 + DATA_SIZE, sizeof(int));
 			recv_all(sockfd, content, content_len);
-			// const char *ip_client_udp = inet_ntoa(udp_client_ip);
-			// const uint16_t port_udp = ntohs(udp_client_port);
-			// printf("%s:%hu - %s - ", ip_client_udp, port_udp, topic);
+			const char *ip_client_udp = inet_ntoa(client_ip);
+			const uint16_t port_udp = ntohs(client_port);
+			printf("%s:%hu - ", ip_client_udp, port_udp);
 			printf("%s - ", topic);
-
 			print_data[data_type](content);
 		}
 	}	
